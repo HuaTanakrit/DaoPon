@@ -206,7 +206,15 @@ npm run build
 npm start
 ```
 
-ปัจจุบัน server ฟังเฉพาะ `127.0.0.1` สำหรับพัฒนาบนเครื่อง หากนำไป deploy ให้ปรับ network binding ใน main.ts ตามแพลตฟอร์ม และตั้ง FRONTEND_URL ให้ตรง origin ของ frontend จริง
+server ใช้ `127.0.0.1` ใน development และ `0.0.0.0` เมื่อ `NODE_ENV=production` กำหนดเองได้ด้วย `HOST` และอ่านพอร์ตจาก `PORT` ของ hosting
+
+### Railway
+
+เชื่อม GitHub repo แล้วเลือกเฉพาะ backend ตั้ง Root Directory `/backend`, Build Command `npm run build`, Start Command `npm start` และ Healthcheck Path `/api/health/ready` ใช้หนึ่ง replica และปิด Serverless เพื่อให้ worker ทำงานต่อเนื่อง
+
+ตั้ง Variables: `NODE_ENV=production`, `HOST=0.0.0.0`, `DATABASE_URL` จาก Neon เดิม, `API_FOOTBALL_KEY`, `ADMIN_API_KEY`, `FRONTEND_URL` เป็น origin ของ Vercel, `PREDICTION_SCORING_ENABLED=true`, `REPLAY_STATS_SYNC_ENABLED=true`, `AUTO_SYNC_ENABLED=false`, `DEMO_CONTROLS_ENABLED=false` ไม่ต้องกำหนด PORT เอง คัดลอกค่าลับจาก `.env` บนเครื่องไปใส่ใน Railway โดยตรง ไม่ commit ค่าจริง
+
+Neon เดิมมี migrations และข้อมูลแล้ว หากใช้ฐานข้อมูลใหม่ให้รัน `npm run db:migrate` และนำข้อมูลเข้าก่อนเปิด worker หลัง deploy ไป Settings → Networking → Generate Domain ตรวจ `/api/health/ready` แล้วนำ origin ที่ได้ไปใส่ `BACKEND_URL` ฝั่ง Vercel โดยไม่เติม `/api`
 
 ## Frontend: DaoPon
 

@@ -28,8 +28,9 @@ async function bootstrap() {
     .build());
   SwaggerModule.setup('api/docs', app, document);
   const port = config.get<number>('PORT')!;
-  await app.listen(port, '127.0.0.1');
-  console.log(`Backend: http://localhost:${port}/api | Swagger: http://localhost:${port}/api/docs`);
+  const host = config.get<string>('HOST') || (config.get<string>('NODE_ENV') === 'production' ? '0.0.0.0' : '127.0.0.1');
+  await app.listen(port, host);
+  console.log(`Backend listening on ${host}:${port} | API: /api | Swagger: /api/docs`);
 }
 
 void bootstrap();
