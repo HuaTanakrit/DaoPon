@@ -1,0 +1,24 @@
+{
+  "name": "premier",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Premier League statistics: NestJS backend and Next.js frontend",
+  "engines": {
+    "node": "^22.12.0 || >=24.0.0"
+  },
+  "scripts": {
+    "backend:dev": "npm --prefix backend run start:dev",
+    "backend:start": "npm --prefix backend start",
+    "backend:build": "npm --prefix backend run build",
+    "backend:test": "npm --prefix backend test",
+    "backend:lint": "npm --prefix backend run lint",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:start": "npm --prefix frontend start",
+    "frontend:build": "npm --prefix frontend run build",
+    "db:migrate": "npm --prefix backend run db:migrate",
+    "db:studio": "npm --prefix backend run db:studio",
+    "data:seed": "npm --prefix backend run data:seed",
+    "data:fixtures": "npm --prefix backend run data:fixtures",
+    "data:replay-stats": "npm --prefix backend run data:replay-stats"
+  }
+}

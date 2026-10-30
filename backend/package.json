@@ -1,0 +1,56 @@
+{
+  "name": "premier-league-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NestJS API for Premier League fixtures and player statistics",
+  "engines": {
+    "node": "^22.12.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "prisma generate && nest build",
+    "start": "node dist/main.js",
+    "start:dev": "prisma generate && nest start --watch",
+    "start:debug": "prisma generate && nest start --debug --watch",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "prisma:generate": "prisma generate",
+    "db:migrate": "node scripts/migrate.cjs",
+    "db:studio": "prisma studio",
+    "test:integration": "jest --runInBand test/database.integration.spec.ts",
+    "data:seed": "node scripts/seed-frontend.cjs",
+    "data:fixtures": "node scripts/seed-fixtures.cjs",
+    "data:replay-stats": "node scripts/sync-replay-stats.cjs"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@nestjs/config": "^4.0.0",
+    "@nestjs/schedule": "^6.0.0",
+    "@nestjs/swagger": "^11.0.0",
+    "@prisma/client": "7.10.1",
+    "@prisma/adapter-pg": "7.10.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.2",
+    "dotenv": "^17.0.0",
+    "helmet": "^8.0.0",
+    "pg": "^8.16.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/testing": "^11.0.0",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/supertest": "^6.0.3",
+    "jest": "29.7.0",
+    "prisma": "7.10.1",
+    "supertest": "^7.1.0",
+    "ts-jest": "^29.4.0",
+    "typescript": "^5.9.0"
+  }
+}

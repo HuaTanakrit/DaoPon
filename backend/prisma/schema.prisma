@@ -1,0 +1,416 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model ReplaySetting {
+  id        Int       @id
+  replayAt  DateTime?  @db.Timestamptz(3)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@map("replay_settings")
+}
+
+enum SyncJobKind {
+  LINEUPS
+  FINAL_STATS
+  RECONCILE
+}
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  UNSUPPORTED
+}
+
+model League {
+  id        Int      @id @default(autoincrement())
+  apiId     Int      @unique
+  name      String
+  country   String?
+  logoUrl   String?
+  seasons   Season[]
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("leagues")
+}
+
+model Season {
+  id                Int                @id @default(autoincrement())
+  leagueId          Int
+  year              Int
+  startsOn          DateTime?          @db.Date
+  endsOn            DateTime?          @db.Date
+  isCurrent         Boolean            @default(false)
+  coverage          Json?              @db.JsonB
+  accessVerifiedAt  DateTime?          @db.Timestamptz(3)
+  fixturesSyncedAt  DateTime?          @db.Timestamptz(3)
+  league            League             @relation(fields: [leagueId], references: [id], onDelete: Restrict)
+  fixtures          Fixture[]
+  playerSeasonStats PlayerSeasonStat[]
+  teams             SeasonTeam[]
+
+  @@unique([leagueId, year])
+  @@map("seasons")
+}
+
+model Team {
+  id                Int                @id @default(autoincrement())
+  apiId             Int                @unique
+  name              String
+  logoUrl           String?
+  updatedAt         DateTime           @updatedAt @db.Timestamptz(3)
+  homeFixtures      Fixture[]          @relation("HomeTeam")
+  awayFixtures      Fixture[]          @relation("AwayTeam")
+  lineups           FixtureLineup[]
+  playerMatchStats  PlayerMatchStat[]
+  playerSeasonStats PlayerSeasonStat[]
+  events            MatchEvent[]
+  seasonMemberships SeasonTeam[]
+  predictions       LineupPrediction[]
+  scorePredictions  ScorePrediction[]
+
+  @@map("teams")
+}
+
+model SeasonTeam {
+  seasonId Int
+  teamId   Int
+  syncedAt DateTime @db.Timestamptz(3)
+  playerPagesTotal Int?
+  playerPagesImported Int?
+  playersSyncedAt DateTime? @db.Timestamptz(3)
+  season   Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  @@id([seasonId, teamId])
+  @@index([teamId])
+  @@map("season_teams")
+}
+
+model Player {
+  id              Int                @id @default(autoincrement())
+  apiId           Int                @unique
+  name            String
+  firstName       String?
+  lastName        String?
+  birthDate       DateTime?          @db.Date
+  nationality     String?
+  heightCm        Int?
+  weightKg        Int?
+  photoUrl        String?
+  profileSyncedAt DateTime?          @db.Timestamptz(3)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(3)
+  lineupEntries   LineupPlayer[]
+  matchStats      PlayerMatchStat[]
+  seasonStats     PlayerSeasonStat[]
+  events          MatchEvent[]       @relation("EventPlayer")
+  relatedEvents   MatchEvent[]       @relation("RelatedPlayer")
+  predictionPicks PredictionPick[]
+
+  @@map("players")
+}
+
+model Coach {
+  id       Int             @id @default(autoincrement())
+  apiId    Int             @unique
+  name     String
+  photoUrl String?
+  lineups  FixtureLineup[]
+
+  @@map("coaches")
+}
+
+model Fixture {
+  id                  Int               @id @default(autoincrement())
+  apiId               Int               @unique
+  seasonId            Int
+  homeTeamId          Int
+  awayTeamId          Int
+  kickoffAt           DateTime?         @db.Timestamptz(3)
+  round               String?
+  status              String
+  elapsed             Int?
+  extraMinutes        Int?
+  referee             String?
+  venueApiId          Int?
+  venueName           String?
+  venueCity           String?
+  homeGoals           Int?
+  awayGoals           Int?
+  homeHalftimeGoals   Int?
+  awayHalftimeGoals   Int?
+  homeFulltimeGoals   Int?
+  awayFulltimeGoals   Int?
+  homeExtraTimeGoals  Int?
+  awayExtraTimeGoals  Int?
+  homePenaltyGoals    Int?
+  awayPenaltyGoals    Int?
+  fixtureSyncedAt     DateTime?         @db.Timestamptz(3)
+  lineupsSyncedAt     DateTime?         @db.Timestamptz(3)
+  playerStatsSyncedAt DateTime?         @db.Timestamptz(3)
+  eventsSyncedAt      DateTime?         @db.Timestamptz(3)
+  rawPayload          Json?             @db.JsonB
+  updatedAt           DateTime          @updatedAt @db.Timestamptz(3)
+  season              Season            @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+  homeTeam            Team              @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Restrict)
+  awayTeam            Team              @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Restrict)
+  lineups             FixtureLineup[]
+  playerStats         PlayerMatchStat[]
+  events              MatchEvent[]
+  syncJobs            SyncJob[]
+  predictions         LineupPrediction[]
+  scorePredictions    ScorePrediction[]
+
+  @@index([seasonId, kickoffAt])
+  @@index([homeTeamId, kickoffAt])
+  @@index([awayTeamId, kickoffAt])
+  @@index([status, kickoffAt])
+  @@map("fixtures")
+}
+
+model FixtureLineup {
+  fixtureId  Int
+  teamId     Int
+  coachId    Int?
+  formation  String?
+  rawPayload Json?          @db.JsonB
+  syncedAt   DateTime       @db.Timestamptz(3)
+  fixture    Fixture        @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  team       Team           @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  coach      Coach?         @relation(fields: [coachId], references: [id], onDelete: SetNull)
+  players    LineupPlayer[]
+
+  @@id([fixtureId, teamId])
+  @@index([teamId])
+  @@index([coachId])
+  @@map("fixture_lineups")
+}
+
+model LineupPlayer {
+  fixtureId   Int
+  teamId      Int
+  playerId    Int
+  isStarter   Boolean
+  shirtNumber Int?
+  position    String?
+  grid        String?
+  lineup      FixtureLineup @relation(fields: [fixtureId, teamId], references: [fixtureId, teamId], onDelete: Cascade)
+  player      Player        @relation(fields: [playerId], references: [id], onDelete: Restrict)
+
+  @@id([fixtureId, playerId])
+  @@index([fixtureId, teamId])
+  @@index([playerId])
+  @@map("lineup_players")
+}
+
+model PlayerMatchStat {
+  fixtureId      Int
+  playerId       Int
+  teamId         Int
+  minutes        Int?
+  shirtNumber    Int?
+  position       String?
+  rating         Decimal? @db.Decimal(10, 6)
+  isCaptain      Boolean?
+  isSubstitute   Boolean?
+  goals          Int?
+  assists        Int?
+  goalsConceded  Int?
+  saves          Int?
+  shotsTotal     Int?
+  shotsOnTarget  Int?
+  passesTotal    Int?
+  keyPasses      Int?
+  // Preserve the provider's raw value. Do not assume it is a percentage.
+  passesAccuracy String?
+  tacklesTotal   Int?
+  interceptions  Int?
+  yellowCards    Int?
+  redCards       Int?
+  rawStatistics  Json     @db.JsonB
+  syncedAt       DateTime @db.Timestamptz(3)
+  fixture        Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  player         Player   @relation(fields: [playerId], references: [id], onDelete: Restrict)
+  team           Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  @@id([fixtureId, playerId])
+  @@index([playerId, fixtureId])
+  @@index([teamId, fixtureId])
+  @@map("player_match_stats")
+}
+
+// Authoritative season snapshots; never add these totals to match-level sums.
+model PlayerSeasonStat {
+  seasonId       Int
+  teamId         Int
+  playerId       Int
+  appearances    Int?
+  starts         Int?
+  minutes        Int?
+  position       String?
+  rating         Decimal? @db.Decimal(10, 6)
+  goals          Int?
+  assists        Int?
+  goalsConceded  Int?
+  saves          Int?
+  yellowCards    Int?
+  yellowRedCards Int?
+  redCards       Int?
+  rawStatistics  Json     @db.JsonB
+  syncedAt       DateTime @db.Timestamptz(3)
+  season         Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  team           Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  player         Player   @relation(fields: [playerId], references: [id], onDelete: Restrict)
+
+  @@id([seasonId, teamId, playerId])
+  @@index([seasonId, goals])
+  @@index([seasonId, assists])
+  @@index([playerId, seasonId])
+  @@index([teamId])
+  @@map("player_season_stats")
+}
+
+// Events have no stable provider event ID. Replace a fixture's event snapshot
+// atomically; sequence is the array index within the latest successful response.
+model MatchEvent {
+  fixtureId         Int
+  sequence          Int
+  teamId            Int?
+  playerId          Int?
+  relatedPlayerId   Int?
+  playerName        String?
+  relatedPlayerName String?
+  minute            Int?
+  extraMinute       Int?
+  type              String
+  detail            String?
+  comments          String?
+  rawPayload        Json    @db.JsonB
+  fixture           Fixture @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  team              Team?   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  player            Player? @relation("EventPlayer", fields: [playerId], references: [id], onDelete: Restrict)
+  relatedPlayer     Player? @relation("RelatedPlayer", fields: [relatedPlayerId], references: [id], onDelete: Restrict)
+
+  @@id([fixtureId, sequence])
+  @@index([fixtureId, type])
+  @@index([teamId])
+  @@index([playerId])
+  @@index([relatedPlayerId])
+  @@map("match_events")
+}
+
+model SyncJob {
+  id          Int           @id @default(autoincrement())
+  fixtureId   Int
+  kind        SyncJobKind
+  status      SyncJobStatus @default(PENDING)
+  runAt       DateTime      @db.Timestamptz(3)
+  attempts    Int           @default(0)
+  maxAttempts Int           @default(8)
+  lockedUntil DateTime?     @db.Timestamptz(3)
+  lockedBy    String?
+  lastError   String?
+  completedAt DateTime?     @db.Timestamptz(3)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime      @updatedAt @db.Timestamptz(3)
+  fixture     Fixture       @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+
+  @@unique([fixtureId, kind])
+  @@index([status, runAt])
+  @@index([status, lockedUntil])
+  @@map("sync_jobs")
+}
+
+model LineupPrediction {
+  id        String   @id @default(cuid())
+  ownerHash String   @db.VarChar(64)
+  userId    String?
+  fixtureId Int
+  teamId    Int
+  formation String   @db.VarChar(16)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  submittedReplayAt DateTime @db.Timestamptz(3)
+  score Int?
+  scoredAt DateTime? @db.Timestamptz(3)
+  matchedPlayerApiIds Int[] @default([])
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fixture   Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  picks     PredictionPick[]
+
+  @@unique([ownerHash, fixtureId, teamId])
+  @@unique([userId, fixtureId, teamId])
+  @@index([fixtureId, teamId])
+  @@index([teamId])
+  @@map("lineup_predictions")
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique @db.VarChar(254)
+  displayName String @db.VarChar(40)
+  passwordHash String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  sessions AuthSession[]
+  predictions LineupPrediction[]
+  scorePredictions ScorePrediction[]
+  @@map("users")
+}
+
+model AuthSession {
+  id String @id @default(cuid())
+  userId String
+  tokenHash String @unique @db.VarChar(64)
+  expiresAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+model PredictionPick {
+  predictionId String
+  playerId     Int
+  slot         Int
+  prediction   LineupPrediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  player       Player @relation(fields: [playerId], references: [id], onDelete: Restrict)
+
+  @@id([predictionId, slot])
+  @@unique([predictionId, playerId])
+  @@index([playerId])
+  @@map("prediction_picks")
+}
+
+model ScorePrediction {
+  id String @id @default(cuid())
+  userId String
+  fixtureId Int
+  teamId Int
+  homeGoals Int
+  awayGoals Int
+  points Int?
+  actualHomeGoals Int?
+  actualAwayGoals Int?
+  scoredAt DateTime? @db.Timestamptz(3)
+  submittedReplayAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fixture Fixture @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  @@unique([userId, fixtureId, teamId])
+  @@index([fixtureId, teamId])
+  @@index([teamId])
+  @@map("score_predictions")
+}

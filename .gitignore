@@ -1,0 +1,27 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+backend/src/generated/
+work/
+outputs/
+.DS_Store
+*.tsbuildinfo
+
+.cache/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# Local credentials, private keys, and database backups.
+.envrc
+.pgpass
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.backup
