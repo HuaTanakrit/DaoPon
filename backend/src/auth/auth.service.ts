@@ -12,19 +12,21 @@ export const accountOwner = (id: string) => tokenHash(`account:${id}`);
 
 @Injectable()
 export class AuthService {
-  private attempts = new Map<string, { count: number; until: number }>();
   constructor(private readonly db: PrismaService) {}
 
-  private throttle(key: string, limit = 15) {
-    const now = Date.now();
-    for (const [key, value] of this.attempts) if (value.until <= now) this.attempts.delete(key);
-    const entry = this.attempts.get(key) || { count: 0, until: now + 15 * 60000 };
-    if (++entry.count > limit) throw new HttpException('ลองเข้าสู่ระบบบ่อยเกินไป กรุณารอ 15 นาที', 429);
-    this.attempts.set(key, entry);
+  private async throttle(key: string, limit = 15) {
+    const now = new Date(Date.now()), expires = new Date(now.getTime() + 15 * 60000), id = tokenHash(key);
+    const [entry] = await this.db.client.$queryRaw<Array<{ count: number }>>`
+      INSERT INTO rate_limit_buckets (id,count,"expiresAt") VALUES (${id},1,${expires})
+      ON CONFLICT (id) DO UPDATE SET
+        count=CASE WHEN rate_limit_buckets."expiresAt" <= ${now} THEN 1 ELSE rate_limit_buckets.count+1 END,
+        "expiresAt"=CASE WHEN rate_limit_buckets."expiresAt" <= ${now} THEN ${expires} ELSE rate_limit_buckets."expiresAt" END
+      RETURNING count`;
+    if (entry.count > limit) throw new HttpException('ลองเข้าสู่ระบบบ่อยเกินไป กรุณารอ 15 นาที', 429);
   }
 
   async register(body: RegisterDto, ip: string, guest?: string) {
-    this.throttle(`register:${ip}`, 30);
+    await this.throttle(`register:${ip}`, 30);
     const passwordHash = await hashPassword(body.password);
     let user: SessionUser;
     try { user = await this.db.client.user.create({ data: { email: body.email, displayName: body.displayName, passwordHash }, select: userSelect }); }
@@ -36,13 +38,13 @@ export class AuthService {
   }
 
   async login(body: LoginDto, ip: string, guest?: string) {
-    this.throttle(`login:${ip}`, 100);
-    this.throttle(`email:${body.email}`);
+    await this.throttle(`login:${ip}`, 100);
+    await this.throttle(`email:${body.email}`);
     const user = await this.db.client.user.findUnique({ where: { email: body.email } });
     // Use the same KDF cost even when the account does not exist.
     const hash = user?.passwordHash || `scrypt-v1$${'0'.repeat(32)}$${'0'.repeat(128)}`;
     if (!(await verifyPassword(body.password, hash)) || !user) throw new UnauthorizedException('อีเมลหรือรหัสผ่านไม่ถูกต้อง');
-    this.attempts.delete(`email:${body.email}`);
+    await this.db.client.rateLimitBucket.deleteMany({ where: { id: tokenHash(`email:${body.email}`) } });
     return this.session({ id: user.id, email: user.email, displayName: user.displayName }, guest);
   }
 

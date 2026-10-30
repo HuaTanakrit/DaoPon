@@ -1,8 +1,10 @@
 # Premier League Backend
 
+Vercel ใช้ [คู่มือ deploy](../docs/DEPLOY_VERCEL.md) HTTP GET/POST `/api/jobs/tick` ต้องมี Bearer `CRON_SECRET` (อย่างน้อย 32 ตัวอักษร) แต่ละ request ทำงานหนึ่งแมตช์ผ่าน lease ใน PostgreSQL เมื่ออยู่บน Vercel ต้องปิด `BACKGROUND_JOBS_ENABLED`; endpoint ยังทำงานได้ตาม flags ตรวจคะแนน/สถิติ เวลาเดโมอ่านจาก DB ต่อ request และ rate limits ของ provider/login ใช้ DB ร่วมกัน
+
 ## เวลาเดโม
 
-`replay_settings` เก็บเวลาที่เลือกสำหรับ backend หนึ่ง process เปิดด้วย `DEMO_CONTROLS_ENABLED=true` และ `DEMO_CONTROL_TOKEN` สุ่มอย่างน้อย 32 ตัวอักษร โดยใช้ค่าเดียวกันเฉพาะ server env ของ Next.js (`frontend/.env.local`) เครื่องนี้ตั้งค่าแล้ว ส่วน `.env.example` ปิดไว้ API `/api/demo` (GET/PUT) และ `/api/demo/fixtures` (GET) ต้องมี Bearer token สำหรับเดโม ไม่ใช้ token บัญชีหรือ admin sync ส่วน Next.js มี proxy เฉพาะงานเดโมและตรวจ Origin สำหรับคำขอแก้ไข
+`replay_settings` เก็บเวลาที่เลือกและโหลดใหม่ทุก request ผ่าน AsyncLocalStorage เพื่อแยก snapshot ของ request ที่ซ้อนกัน เปิดด้วย `DEMO_CONTROLS_ENABLED=true` และ `DEMO_CONTROL_TOKEN` สุ่มอย่างน้อย 32 ตัวอักษร โดยใช้ค่าเดียวกันเฉพาะ server env ของ Next.js (`frontend/.env.local`) บน Vercel ต้อง Login ด้วยอีเมลใน `DEMO_ADMIN_EMAILS` ด้วย API `/api/demo` (GET/PUT) และ `/api/demo/fixtures` (GET) ต้องมี Bearer token สำหรับเดโม ส่วน Next.js มี proxy และตรวจ Origin สำหรับคำขอแก้ไข
 
 PUT body `{ "replayAt": "2024-11-02T22:00:00+07:00" }` หยุดเวลาเกมไว้ ณ จุดนั้น รองรับ 1 สิงหาคม 2024 ถึง 30 มิถุนายน 2025 ส่ง `{ "replayAt": null }` เพื่อกลับเวลาจริงย้อนหลัง 2 ปี เก็บข้ามการรีสตาร์ต ตารางแข่ง สถิติ การล็อกคำทำนาย และการเฉลยใช้ clock เดียวกัน แต่ session expiry, rate limits, quota reset และ retry leases ยังใช้เวลาจริง
 
@@ -156,7 +158,7 @@ AUTO_SYNC_SEASON=2024
 
 **ขอบเขตเวอร์ชันนี้:** worker อัปเดตเฉพาะรายนัด ยังไม่ refresh season snapshots อัตโนมัติ ต้องใช้ POST `/api/admin/sync/players` เมื่อต้องการปรับ leaderboard; ยังไม่มี pre-match lineup polling, UI จัดการงาน หรือการแจ้งเตือนงานล้มเหลว
 
-ตั้งใจใช้ backend **หนึ่ง process/หนึ่ง replica** ในช่วงแรก ตัวจำกัด API เรียง request ห่างกันอย่างน้อย 6.5 วินาทีอยู่ใน memory ของ process แม้ job มี database lease แต่ยังไม่รองรับ rate limiter และ fixture locking ร่วมกันข้าม replica หากจะขยายหลายเครื่องควรเพิ่มระบบคิวและ limiter กลางก่อน
+HTTP replay worker รองรับหลาย instance โดยใช้ lease กลางใน `worker_leases` จำกัดงานหนึ่งแมตช์ต่อ invocation ตัวจำกัด API เก็บช่วงห่างอย่างน้อย 6.5 วินาทีและโควตารายวันร่วมใน `football_api_state` (เก็บเฉพาะ hash ของ key) ส่วน login limits เก็บใน `rate_limit_buckets` Scheduler legacy สำหรับแมตช์จริงยังควรใช้หนึ่ง process; บน Vercel ปิด timer และ legacy scheduler แล้วใช้ `/api/jobs/tick`
 
 โควตาต่อวันยังต้องเผื่อ retries, reconciliation และ pagination ด้วย การรีเซ็ตโควตาคือ 00:00 UTC หรือ 07:00 น. ไทย ฟังก์ชัน quota status เป็นค่าที่เห็นล่าสุด ไม่ใช่ตัวนับถาวรข้ามการรีสตาร์ต
 

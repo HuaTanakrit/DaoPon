@@ -1,7 +1,7 @@
 import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
 export const SESSION_COOKIE = 'touchline_session';
-export const BACKEND = process.env.BACKEND_URL || 'http://127.0.0.1:3001';
+export const BACKEND = (process.env.BACKEND_URL || 'http://127.0.0.1:3001').replace(/\/+$/, '');
 export const apiJson = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 export function sameOrigin(request: NextRequest) {
   try { const origin = new URL(request.headers.get('origin') || ''); return ['http:', 'https:'].includes(origin.protocol) && origin.host === request.headers.get('host'); }

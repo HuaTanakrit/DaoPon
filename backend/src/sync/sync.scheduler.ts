@@ -15,7 +15,7 @@ export class SyncScheduler {
   constructor(private readonly config: ConfigService, private readonly prisma: PrismaService,
     private readonly sync: SyncService) {}
 
-  private get enabled() { return this.config.get<boolean>('AUTO_SYNC_ENABLED') === true && this.prisma.configured; }
+  private get enabled() { return this.config.get<boolean>('BACKGROUND_JOBS_ENABLED') !== false && this.config.get<boolean>('AUTO_SYNC_ENABLED') === true && this.prisma.configured; }
 
   @Cron('15 7 * * *', { timeZone: 'Asia/Bangkok', waitForCompletion: true })
   async refreshFixtures() {

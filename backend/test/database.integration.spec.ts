@@ -1,7 +1,7 @@
 import 'reflect-metadata';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { HttpException, INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -14,7 +14,11 @@ import { Prisma } from '../src/generated/prisma/client';
 import { PredictionScoringService } from '../src/predictions/prediction-scoring.service';
 import { tokenHash } from '../src/auth/auth.service';
 import { replayClock, setReplayOverride } from '../src/fixtures/replay-clock';
-import { DemoService } from '../src/demo/demo.service';
+import { JobsService } from '../src/jobs/jobs.service';
+import { ReplayClockService } from '../src/fixtures/replay-clock.service';
+import { FootballBudgetService } from '../src/football-api/football-budget.service';
+import { AuthService } from '../src/auth/auth.service';
+import { ReplayStatsService } from '../src/players/replay-stats.service';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const suite = databaseUrl ? describe : describe.skip;
@@ -49,7 +53,9 @@ suite('Database integration using captured API data (no live API calls)', () => 
   });
   beforeEach(async () => {
     setReplayOverride(null, 0); values.DEMO_CONTROLS_ENABLED = false;
-    await db.client.$executeRawUnsafe('TRUNCATE TABLE replay_settings, users, auth_sessions, leagues, teams, players, coaches, seasons, fixtures, fixture_lineups, lineup_players, player_match_stats, player_season_stats, match_events, sync_jobs RESTART IDENTITY CASCADE');
+    values.BACKGROUND_JOBS_ENABLED = false; values.REPLAY_STATS_SYNC_ENABLED = false; values.CRON_SECRET = undefined;
+    values.PREDICTION_SCORING_ENABLED = false;
+    await db.client.$executeRawUnsafe('TRUNCATE TABLE worker_leases, football_api_state, rate_limit_buckets, replay_settings, users, auth_sessions, leagues, teams, players, coaches, seasons, fixtures, fixture_lineups, lineup_players, player_match_stats, player_season_stats, match_events, sync_jobs RESTART IDENTITY CASCADE');
     partialLineups = false;
     playerPages = [];
     api.get.mockImplementation(async (endpoint: string, params: Record<string, number>) => {
@@ -120,8 +126,8 @@ suite('Database integration using captured API data (no live API calls)', () => 
     await sync.seasonFixtures(2024);
     const stored = await db.client.fixture.findUniqueOrThrow({ where: { apiId: fixture.fixture.id } });
     await db.client.syncJob.create({ data: { fixtureId: stored.id, kind: 'FINAL_STATS', runAt: new Date(0) } });
-    values.AUTO_SYNC_ENABLED = true;
-    try { await scheduler.processDueJob(); } finally { values.AUTO_SYNC_ENABLED = false; }
+    values.AUTO_SYNC_ENABLED = true; values.BACKGROUND_JOBS_ENABLED = true;
+    try { await scheduler.processDueJob(); } finally { values.AUTO_SYNC_ENABLED = false; values.BACKGROUND_JOBS_ENABLED = false; }
     const jobs = await db.client.syncJob.findMany({ orderBy: { id: 'asc' } });
     expect(jobs.find((j) => j.kind === 'FINAL_STATS')?.status).toBe('SUCCEEDED');
     expect(jobs.find((j) => j.kind === 'RECONCILE')?.status).toBe('PENDING');
@@ -430,6 +436,106 @@ suite('Database integration using captured API data (no live API calls)', () => 
       const calls = api.get.mock.calls.length; await worker.processDueJob(); expect(api.get.mock.calls).toHaveLength(calls);
     } finally { values.PREDICTION_SCORING_ENABLED = false; now.mockRestore(); }
   }, 30000);
+  it('protects HTTP jobs and runs explicitly while in-process timers are disabled', async () => {
+    await request(app.getHttpServer()).get('/api/jobs/tick').expect(503);
+    values.CRON_SECRET = 'cron-integration-secret-at-least-32-characters';
+    await request(app.getHttpServer()).get('/api/jobs/tick').expect(401);
+    await request(app.getHttpServer()).post('/api/jobs/tick').set('Authorization', 'Bearer wrong-token').expect(401);
+    const result = await request(app.getHttpServer()).get('/api/jobs/tick').set('Authorization', 'Bearer ' + values.CRON_SECRET).expect(200);
+    expect(result.headers['cache-control']).toBe('no-store');
+    expect(result.body).toMatchObject({ status: 'ok', scoring: { status: 'disabled' }, stats: null });
+    expect(await db.client.workerLease.count()).toBe(0);
+  });
+
+  it('uses a database lease across independent HTTP runners and recovers expired leases', async () => {
+    values.REPLAY_STATS_SYNC_ENABLED = true;
+    const stats = app.get(ReplayStatsService), worker = app.get(PredictionScoringService), clock = app.get(ReplayClockService), config = app.get(ConfigService);
+    const other = new JobsService(db, worker, stats, clock, config);
+    let release!: () => void, entered!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const mock = jest.spyOn(stats, 'syncMissing').mockImplementation(async () => {
+      entered(); await barrier;
+      return { status: 'ok', imported: 0, requested: 0, remainingMatches: 0, dailyQuotaRemaining: 100 };
+    });
+    try {
+      const first = app.get(JobsService).run(); await started;
+      expect((await other.run()).status).toBe('busy');
+      release(); expect((await first).status).toBe('ok');
+      expect(mock).toHaveBeenCalledTimes(1);
+      await db.client.workerLease.create({ data: { id: 'replay-worker', owner: 'crashed-worker', lockedUntil: new Date(0) } });
+      expect((await other.run()).status).toBe('ok');
+      expect(await db.client.workerLease.count()).toBe(0);
+    } finally { release(); mock.mockRestore(); }
+  });
+
+  it('imports only one historical stats match per HTTP tick without writing a local cache', async () => {
+    await sync.match(fixture.fixture.id);
+    const old = await db.client.fixture.findUniqueOrThrow({ where: { apiId: fixture.fixture.id } });
+    const match = await db.client.fixture.create({ data: { apiId: 900160, seasonId: old.seasonId, homeTeamId: old.homeTeamId,
+      awayTeamId: old.awayTeamId, kickoffAt: new Date('2025-05-25T15:00:00Z'), status: 'FT' } });
+    values.DEMO_CONTROLS_ENABLED = true; values.REPLAY_STATS_SYNC_ENABLED = true;
+    values.CRON_SECRET = 'cron-integration-secret-at-least-32-characters';
+    await db.client.replaySetting.create({ data: { id: 1, replayAt: new Date('2025-05-25T18:00:00Z') } });
+    api.get.mockResolvedValue({ response: [{ ...fixture, fixture: { ...fixture.fixture, id: 900160 } }] }); api.get.mockClear();
+    const cache = join(__dirname, '../.cache/football/2024/matches/900160.json');
+    expect(existsSync(cache)).toBe(false);
+    const result = await request(app.getHttpServer()).get('/api/jobs/tick').set('Authorization', 'Bearer ' + values.CRON_SECRET).expect(200);
+    expect(result.body.stats).toMatchObject({ imported: 1, requested: 1 });
+    expect(api.get).toHaveBeenCalledTimes(1);
+    expect((await db.client.fixture.findUniqueOrThrow({ where: { id: match.id } })).playerStatsSyncedAt).not.toBeNull();
+    expect(existsSync(cache)).toBe(false);
+    await db.client.fixture.update({ where: { id: match.id }, data: { playerStatsSyncedAt: null } });
+    api.get.mockRejectedValue(new HttpException('Daily provider quota', 429));
+    const deferred = await request(app.getHttpServer()).get('/api/jobs/tick').set('Authorization', 'Bearer ' + values.CRON_SECRET).expect(200);
+    expect(deferred.body).toMatchObject({ status: 'deferred', reason: 'provider_quota' });
+    expect(await db.client.workerLease.count()).toBe(0);
+  }, 30000);
+
+  it('loads clock changes made by another instance on every request', async () => {
+    values.DEMO_CONTROLS_ENABLED = true; values.DEMO_CONTROL_TOKEN = 'demo-integration-token-32-characters';
+    await db.client.replaySetting.create({ data: { id: 1, replayAt: new Date('2024-11-02T15:00:00Z') } });
+    const get = () => request(app.getHttpServer()).get('/api/demo').set('Authorization', 'Bearer ' + values.DEMO_CONTROL_TOKEN).expect(200);
+    expect((await get()).body.clock.replayNow).toBe('2024-11-02T15:00:00.000Z');
+    setReplayOverride(new Date('2024-01-01T00:00:00Z'));
+    await db.client.replaySetting.update({ where: { id: 1 }, data: { replayAt: new Date('2024-11-03T18:00:00Z') } });
+    expect((await get()).body.clock.replayNow).toBe('2024-11-03T18:00:00.000Z');
+    expect(await app.get(ReplayClockService).run(() => replayClock().replayNow)).toBe('2024-11-03T18:00:00.000Z');
+  });
+
+  it('shares API spacing, provider quota and UTC daily budgets across instances', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-31T10:00:00Z'));
+    const a = app.get(FootballBudgetService), b = new FootballBudgetService(db, app.get(ConfigService)), key = 'budget-integration-key-not-a-real-key';
+    try {
+      const reserved = await Promise.all([a.reserve(key), b.reserve(key)]);
+      expect(Math.abs(reserved[0].at - reserved[1].at)).toBe(6500);
+      expect((await db.client.footballApiState.findFirstOrThrow()).used).toBe(2);
+      expect((await db.client.footballApiState.findFirstOrThrow()).keyHash).not.toBe(key);
+      await a.observe(key, 4);
+      await expect(b.reserve(key)).rejects.toMatchObject({ status: 429 });
+      now.mockReturnValue(Date.parse('2026-11-01T00:00:00Z'));
+      expect((await b.reserve(key)).remaining).toBe(99);
+      expect((await db.client.footballApiState.findFirstOrThrow()).used).toBe(1);
+    } finally { now.mockRestore(); }
+  });
+
+  it('keeps the last five provider calls reserved even without quota headers', async () => {
+    values.FOOTBALL_DAILY_LIMIT = 6;
+    try {
+      await app.get(FootballBudgetService).reserve('small-budget-test-key');
+      await expect(new FootballBudgetService(db, app.get(ConfigService)).reserve('small-budget-test-key')).rejects.toMatchObject({ status: 429 });
+    } finally { delete values.FOOTBALL_DAILY_LIMIT; }
+  });
+
+  it('enforces email login limits across separate application instances', async () => {
+    const a = new AuthService(db), b = new AuthService(db);
+    const login = { email: 'limited@example.com', password: 'wrong-password-123' };
+    for (let i = 0; i < 15; i++) await expect((i % 2 ? a : b).login(login, 'test-ip-' + i)).rejects.toMatchObject({ status: 401 });
+    await expect(b.login(login, 'different-ip')).rejects.toMatchObject({ status: 429 });
+    const bucket = await db.client.rateLimitBucket.findUniqueOrThrow({ where: { id: tokenHash('email:' + login.email) } });
+    expect(bucket.count).toBe(16);
+  }, 30000);
+
   it('protects demo controls, validates the season and never accepts clock overrides on public APIs', async () => {
     await request(app.getHttpServer()).get('/api/demo').expect(404);
     values.DEMO_CONTROLS_ENABLED = true; values.DEMO_CONTROL_TOKEN = 'demo-integration-token-32-characters';
@@ -450,7 +556,8 @@ suite('Database integration using captured API data (no live API calls)', () => 
     const set = (replayAt: string | null) => request(app.getHttpServer()).put('/api/demo').set('Authorization', 'Bearer ' + values.DEMO_CONTROL_TOKEN).send({ replayAt }).expect(200);
     try {
       await set('2025-05-24T15:00:00Z');
-      const savedClock = replayClock(); await app.get(DemoService).onModuleInit(); expect(replayClock().replayNow).toBe(savedClock.replayNow);
+      const savedClock = await request(app.getHttpServer()).get('/api/demo').set('Authorization', 'Bearer ' + values.DEMO_CONTROL_TOKEN).expect(200);
+      expect(savedClock.body.clock.replayNow).toBe('2025-05-24T15:00:00.000Z');
       const auth = (await request(app.getHttpServer()).post('/api/auth/register').send({ email: 'demo@example.com', displayName: 'Demo Player', password: 'test-password-123' }).expect(201)).body;
       const putScore = () => request(app.getHttpServer()).put('/api/predictions/900140/score').set('Authorization', 'Bearer ' + auth.token).send({ team: 40, homeGoals: 1, awayGoals: 1 });
       const context = (await request(app.getHttpServer()).get('/api/predictions/fixtures/900140?team=40').expect(200)).body;
@@ -472,6 +579,11 @@ suite('Database integration using captured API data (no live API calls)', () => 
       expect((await db.client.scorePrediction.findFirstOrThrow({ where: { fixtureId: earlier.id } })).points).toBeNull();
       const scores = (await request(app.getHttpServer()).get('/api/me/scores').set('Authorization', 'Bearer ' + auth.token).expect(200)).body;
       expect(scores.teams[0]).toMatchObject({ points: 11, scorePoints: 3 });
+      values.CRON_SECRET = 'cron-integration-secret-at-least-32-characters';
+      api.get.mockResolvedValue({ response: [{ ...fixture, fixture: { ...fixture.fixture, id: 900141 }, lineups: sample('lineups') }] });
+      const tick = await request(app.getHttpServer()).get('/api/jobs/tick').set('Authorization', 'Bearer ' + values.CRON_SECRET).expect(200);
+      expect(tick.body.scoring).toMatchObject({ status: 'processed', fixtureApiId: 900141 });
+      expect((await db.client.scorePrediction.findFirstOrThrow({ where: { fixtureId: earlier.id } })).points).toBe(3);
       const calls = api.get.mock.calls.length;
       await set('2025-05-24T15:00:00Z'); await putScore().expect(403); await putXi().expect(403);
       await set('2025-05-25T18:00:00Z'); await app.get(PredictionScoringService).processDueJob(900140); expect(api.get.mock.calls).toHaveLength(calls);

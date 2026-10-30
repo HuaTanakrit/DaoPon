@@ -2,7 +2,7 @@ import 'server-only';
 import { notFound } from 'next/navigation';
 import type { PageResult, Team, UpcomingFixturesResult, ReplayPlayersResult, PredictionContext } from './types';
 
-const backend = process.env.BACKEND_URL || 'http://127.0.0.1:3001';
+const backend = (process.env.BACKEND_URL || 'http://127.0.0.1:3001').replace(/\/+$/, '');
 export const SEASON = 2024;
 export const SEASON_LABEL = '2024/25';
 

@@ -16,6 +16,30 @@ model ReplaySetting {
   @@map("replay_settings")
 }
 
+model WorkerLease {
+  id          String   @id
+  owner       String
+  lockedUntil DateTime @db.Timestamptz(3)
+  @@map("worker_leases")
+}
+
+model FootballApiState {
+  keyHash           String   @id
+  day               String
+  used              Int      @default(0)
+  providerRemaining Int?
+  nextAllowedAt     DateTime @db.Timestamptz(3)
+  @@map("football_api_state")
+}
+
+model RateLimitBucket {
+  id        String   @id
+  count     Int
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+  @@map("rate_limit_buckets")
+}
+
 enum SyncJobKind {
   LINEUPS
   FINAL_STATS

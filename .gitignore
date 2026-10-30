@@ -25,3 +25,4 @@ frontend/.env.local
 *.pfx
 *.dump
 *.backup
+.vercel/

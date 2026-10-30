@@ -1,7 +1,8 @@
-import { BadGatewayException, HttpException, Injectable, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
+import { BadGatewayException, HttpException, Injectable, Optional, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ApiResponse } from './types';
+import { FootballBudgetService } from './football-budget.service';
 
 type Endpoint = '/fixtures' | '/fixtures/lineups' | '/fixtures/players' | '/fixtures/events' | '/players';
 
@@ -12,7 +13,7 @@ export class FootballApiService {
   private remaining: number | null = null;
   private quotaDay: string | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, @Optional() private readonly budget?: FootballBudgetService) {}
 
   get<T>(endpoint: Endpoint, params: Record<string, number | string>): Promise<ApiResponse<T>> {
     const result = this.queue.then(() => this.request<T>(endpoint, params));
@@ -27,8 +28,15 @@ export class FootballApiService {
   private async request<T>(endpoint: Endpoint, params: Record<string, number | string>): Promise<ApiResponse<T>> {
     const key = this.config.get<string>('API_FOOTBALL_KEY');
     if (!key) throw new ServiceUnavailableException('API_FOOTBALL_KEY is not configured');
-    await delay(Math.max(0, this.nextAllowedAt - Date.now()));
-    this.nextAllowedAt = Date.now() + 6500;
+    if (this.budget?.configured) {
+      const reserved = await this.budget.reserve(key);
+      this.remaining = reserved.remaining; this.quotaDay = new Date(Date.now()).toISOString().slice(0, 10);
+      await delay(Math.max(0, reserved.at - Date.now()));
+    } else {
+      if (this.config.get<string>('VERCEL')) throw new ServiceUnavailableException('Persistent API budget requires DATABASE_URL');
+      await delay(Math.max(0, this.nextAllowedAt - Date.now()));
+      this.nextAllowedAt = Date.now() + 6500;
+    }
     const url = new URL(`https://v3.football.api-sports.io${endpoint}`);
     for (const [name, value] of Object.entries(params)) url.searchParams.set(name, String(value));
     let response: Response;
@@ -41,6 +49,7 @@ export class FootballApiService {
     if (remaining !== null && Number.isFinite(Number(remaining))) {
       this.remaining = Number(remaining);
       this.quotaDay = new Date(Date.now()).toISOString().slice(0, 10);
+      if (this.budget?.configured) await this.budget.observe(key, Number(remaining));
     }
     if (response.status === 429) throw new HttpException('Football API rate limit reached; try again later', 429);
     if (!response.ok) throw new BadGatewayException('Football API returned an unsuccessful HTTP response');

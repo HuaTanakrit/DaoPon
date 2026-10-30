@@ -11,6 +11,14 @@ export function validateEnvironment(env: Record<string, unknown>) {
   const replayStatsSync = String(env.REPLAY_STATS_SYNC_ENABLED ?? 'false');
   const predictionScoring = String(env.PREDICTION_SCORING_ENABLED ?? 'false');
   const demoEnabled = String(env.DEMO_CONTROLS_ENABLED ?? 'false');
+  const backgroundJobs = String(env.BACKGROUND_JOBS_ENABLED ?? (env.VERCEL ? 'false' : 'true'));
+  if (!['true', 'false'].includes(backgroundJobs)) throw new Error('BACKGROUND_JOBS_ENABLED must be true or false');
+  const cronSecret = String(env.CRON_SECRET ?? '');
+  if (cronSecret && cronSecret.length < 32) throw new Error('CRON_SECRET must have at least 32 characters');
+  const dailyLimit = Number(env.FOOTBALL_DAILY_LIMIT ?? 100);
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 6 || dailyLimit > 1000000) throw new Error('FOOTBALL_DAILY_LIMIT must be an integer >= 6');
+  if (env.VERCEL && autoSync === 'true') throw new Error('Use replay jobs on Vercel; AUTO_SYNC_ENABLED must be false');
+  if (env.VERCEL && backgroundJobs === 'true') throw new Error('BACKGROUND_JOBS_ENABLED must be false on Vercel');
   if (!['true', 'false'].includes(demoEnabled)) throw new Error('DEMO_CONTROLS_ENABLED must be true or false');
   if (demoEnabled === 'true' && String(env.DEMO_CONTROL_TOKEN ?? '').length < 32) throw new Error('Demo control requires a private token of at least 32 characters');
   if (!['true', 'false'].includes(predictionScoring)) throw new Error('PREDICTION_SCORING_ENABLED must be true or false');
@@ -33,6 +41,9 @@ export function validateEnvironment(env: Record<string, unknown>) {
     REPLAY_STATS_SYNC_ENABLED: replayStatsSync === 'true',
     PREDICTION_SCORING_ENABLED: predictionScoring === 'true',
     DEMO_CONTROLS_ENABLED: demoEnabled === 'true',
+    BACKGROUND_JOBS_ENABLED: backgroundJobs === 'true',
+    CRON_SECRET: cronSecret,
+    FOOTBALL_DAILY_LIMIT: dailyLimit,
     DATABASE_URL: databaseUrl,
     FRONTEND_URL: String(env.FRONTEND_URL ?? 'http://localhost:3000'),
   };

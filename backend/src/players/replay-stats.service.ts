@@ -8,6 +8,7 @@ import { FootballApiService } from '../football-api/football-api.service';
 import { ApiEvent, ApiFixture, ApiMatchPlayers } from '../football-api/types';
 import { Prisma } from '../generated/prisma/client';
 import { replayClock } from '../fixtures/replay-clock';
+import { ReplayClockService } from '../fixtures/replay-clock.service';
 import { pageResult } from '../common/dto/pagination.dto';
 import { PlayersQueryDto } from './players.dto';
 
@@ -21,7 +22,7 @@ export class ReplayStatsService {
   private readonly logger = new Logger(ReplayStatsService.name);
 
   constructor(private readonly db: PrismaService, private readonly api: FootballApiService,
-    private readonly config: ConfigService) {}
+    private readonly config: ConfigService, private readonly clock: ReplayClockService) {}
 
   private completedWhere(season: number, league: number, team?: number): Prisma.FixtureWhereInput {
     return {
@@ -79,12 +80,12 @@ export class ReplayStatsService {
 
   @Cron('5 * * * *', { timeZone: 'Asia/Bangkok', waitForCompletion: true })
   async scheduledSync() {
-    if (this.config.get<boolean>('REPLAY_STATS_SYNC_ENABLED') !== true || !this.db.configured || replayClock().mode === 'DEMO') return;
-    try { this.logger.log(JSON.stringify(await this.syncMissing())); }
+    if (this.config.get<boolean>('BACKGROUND_JOBS_ENABLED') === false || this.config.get<boolean>('REPLAY_STATS_SYNC_ENABLED') !== true || !this.db.configured) return;
+    try { await this.clock.run(async () => { if (replayClock().mode !== 'DEMO') this.logger.log(JSON.stringify(await this.syncMissing())); }); }
     catch { this.logger.warn('Replay statistics sync paused; it will retry on the next scheduled run.'); }
   }
 
-  async syncMissing(maxRequests = 90) {
+  async syncMissing(maxRequests = 90, maxMatches = Infinity, useCache = !this.config.get<string>('VERCEL')) {
     if (this.running) return { status: 'already_running', imported: 0 };
     this.running = true;
     let imported = 0;
@@ -100,17 +101,20 @@ export class ReplayStatsService {
         : [f.homeTeam.apiId, f.awayTeam.apiId].includes(42) ? 1 : 2;
       fixtures.sort((a, b) => priority(a) - priority(b));
       for (const fixture of fixtures) {
+        if (imported >= maxMatches) break;
         const file = resolve(__dirname, '../../.cache/football/2024/matches', `${fixture.apiId}.json`);
         let row: Match | undefined;
-        try { row = JSON.parse(await readFile(file, 'utf8')) as Match; } catch {}
+        if (useCache) { try { row = JSON.parse(await readFile(file, 'utf8')) as Match; } catch {} }
         if (!row || row.fixture?.id !== fixture.apiId) {
           if (requested >= maxRequests || (this.api.quotaRemaining !== null && this.api.quotaRemaining <= 5)) break;
           row = (await this.api.get<Match>('/fixtures', { id: fixture.apiId })).response[0];
           requested++;
         }
         await this.storeMatch(fixture.id, fixture.apiId, row);
-        await mkdir(resolve(file, '..'), { recursive: true });
-        await writeFile(file, JSON.stringify(row));
+        if (useCache) {
+          await mkdir(resolve(file, '..'), { recursive: true });
+          await writeFile(file, JSON.stringify(row));
+        }
         imported++;
       }
       return { status: 'ok', imported, requested, remainingMatches: fixtures.length - imported,

@@ -1,4 +1,4 @@
-import { replayClock, shiftBangkokYears, replayDateToReal, setReplayOverride } from '../src/fixtures/replay-clock';
+import { replayClock, shiftBangkokYears, replayDateToReal, setReplayOverride, withReplayClock } from '../src/fixtures/replay-clock';
 
 describe('Bangkok replay clock', () => {
   afterEach(() => setReplayOverride(null, 0));
@@ -33,5 +33,22 @@ describe('Bangkok replay clock', () => {
     setReplayOverride(new Date('2024-11-02T18:00:00Z'));
     expect(replayDateToReal(new Date('2024-11-02T18:00:00Z'), real)).toEqual(real);
     expect(replayDateToReal(new Date('2024-11-02T19:00:00Z'), real).getTime()).toBe(real.getTime() + 3600000);
+  });
+
+  it('isolates overlapping request snapshots and scoped clock changes', async () => {
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const a = withReplayClock({ demoTime: new Date('2024-11-02T15:00:00Z'), revision: 10 }, async () => {
+      await barrier;
+      expect(replayClock().replayNow).toBe('2024-11-02T15:00:00.000Z');
+      expect(replayClock().revision).toBe(10);
+    });
+    const b = withReplayClock({ demoTime: new Date('2024-11-03T15:00:00Z'), revision: 11 }, async () => {
+      setReplayOverride(new Date('2024-11-03T18:00:00Z'), 12);
+      release(); await Promise.resolve();
+      expect(replayClock().replayNow).toBe('2024-11-03T18:00:00.000Z');
+    });
+    await Promise.all([a, b]);
+    expect(replayClock().mode).toBe('LIVE');
   });
 });

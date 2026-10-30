@@ -11,11 +11,13 @@ import { SyncModule } from './sync/sync.module';
 import { PredictionsModule } from './predictions/predictions.module';
 import { AuthModule } from './auth/auth.module';
 import { DemoModule } from './demo/demo.module';
+import { ReplayClockModule } from './fixtures/replay-clock.service';
+import { JobsModule } from './jobs/jobs.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
-    ScheduleModule.forRoot(), DatabaseModule, AuthModule, TeamsModule, FixturesModule, PlayersModule, SyncModule, PredictionsModule, DemoModule,
+    ScheduleModule.forRoot(), DatabaseModule, ReplayClockModule, AuthModule, TeamsModule, FixturesModule, PlayersModule, SyncModule, PredictionsModule, JobsModule, DemoModule,
   ],
   controllers: [HealthController],
 })

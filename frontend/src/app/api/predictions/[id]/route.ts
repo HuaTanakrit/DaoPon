@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const cookieName = 'touchline_session';
-const backend = process.env.BACKEND_URL || 'http://127.0.0.1:3001';
+const backend = (process.env.BACKEND_URL || 'http://127.0.0.1:3001').replace(/\/+$/, '');
 const valid = (id: string) => /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) > 0;
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 

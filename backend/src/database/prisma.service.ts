@@ -15,6 +15,8 @@ export class PrismaService implements OnModuleDestroy {
           max: 5,
           connectionTimeoutMillis: 5000,
           idleTimeoutMillis: 30000,
+          // Prisma's timestamp serialization expects UTC, including raw SQL batches.
+          options: '-c timezone=UTC',
         }) })
       : null;
   }

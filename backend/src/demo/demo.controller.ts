@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Post, Put, UseGuards } from
 import { IsDefined, ValidateIf, IsISO8601, IsOptional, IsInt, Min } from 'class-validator';
 import { PrismaService } from '../database/prisma.service';
 import { replayClock } from '../fixtures/replay-clock';
-import { PredictionScoringService } from '../predictions/prediction-scoring.service';
+import { JobsService } from '../jobs/jobs.service';
 import { DemoGuard } from './demo.guard';
 import { DemoService } from './demo.service';
 
@@ -17,7 +17,7 @@ class ProcessDemoDto {
 
 @Controller('demo') @UseGuards(DemoGuard)
 export class DemoController {
-  constructor(private readonly demo: DemoService, private readonly db: PrismaService, private readonly scoring: PredictionScoringService) {}
+  constructor(private readonly demo: DemoService, private readonly db: PrismaService, private readonly jobs: JobsService) {}
   @Get() state() { return { clock: replayClock() }; }
   @Get('fixtures') async fixtures() {
     const fixtures = await this.db.client.fixture.findMany({ where: { season: { year: 2024, league: { apiId: 39 } }, kickoffAt: { not: null },
@@ -33,7 +33,7 @@ export class DemoController {
     return this.demo.set(body.replayAt);
   }
   @Post('process') async process(@Body() body: ProcessDemoDto) {
-    await this.scoring.processDueJob(body.fixture);
-    return { clock: replayClock(), message: 'ตรวจงานที่ถึงเวลาแล้วหนึ่งแมตช์ งานอื่นตรวจต่อทุกนาที' };
+    const result = await this.jobs.run(body.fixture, true);
+    return { ...result, clock: replayClock(), message: 'ตรวจงานที่ถึงเวลาแล้ว งานอื่นตรวจต่อเมื่อรอบอัตโนมัติถูกเรียก' };
   }
 }

@@ -8,48 +8,55 @@ import { ApiFixture, ApiLineup } from '../football-api/types';
 import { SyncJob } from '../generated/prisma/client';
 import { replayClock, replayDateToReal } from '../fixtures/replay-clock';
 import { scoreNames, scoreResult } from './scoring';
+import { ReplayClockService } from '../fixtures/replay-clock.service';
+
+export type ScoringRun = { status: 'disabled' | 'busy' | 'idle' | 'processed' | 'deferred' | 'failed'; fixtureApiId?: number };
 
 @Injectable()
 export class PredictionScoringService {
   private readonly logger = new Logger(PredictionScoringService.name);
   private readonly workerId = randomUUID();
   private busy = false;
-  constructor(private readonly db: PrismaService, private readonly api: FootballApiService, private readonly config: ConfigService) {}
+  constructor(private readonly db: PrismaService, private readonly api: FootballApiService, private readonly config: ConfigService,
+    private readonly clock: ReplayClockService) {}
 
-  async rescheduleForClock() {
+  async rescheduleForClock() { await this.syncSchedules(true); }
+
+  private async syncSchedules(reset: boolean, now = new Date(Date.now())) {
     const pending = await this.db.client.fixture.findMany({ where: { kickoffAt: { not: null },
+      status: { notIn: ['CANC', 'PST', 'ABD', 'AWD', 'WO'] },
       OR: [{ predictions: { some: { userId: { not: null }, score: null } } }, { scorePredictions: { some: { points: null } } }] },
       select: { id: true, kickoffAt: true } });
-    for (const fixture of pending) {
-      const runAt = replayDateToReal(new Date(fixture.kickoffAt!.getTime() + 3 * 3600000));
-      await this.db.client.syncJob.upsert({ where: { fixtureId_kind: { fixtureId: fixture.id, kind: 'LINEUPS' } },
-        create: { fixtureId: fixture.id, kind: 'LINEUPS', runAt }, update: {} });
-      await this.db.client.syncJob.updateMany({ where: { fixtureId: fixture.id, kind: 'LINEUPS', status: { not: 'RUNNING' } },
-        data: { runAt, status: 'PENDING', attempts: 0, lastError: null, completedAt: null } });
-    }
+    if (!pending.length) return;
+    const rows = JSON.stringify(pending.map((fixture) => ({ fixtureId: fixture.id,
+      runAt: replayDateToReal(new Date(fixture.kickoffAt!.getTime() + 3 * 3600000), now).toISOString() })));
+    const live = replayClock().mode !== 'DEMO';
+    // One database round trip for all fixtures, rather than hundreds on a cold function.
+    await this.db.client.$executeRaw`INSERT INTO sync_jobs ("fixtureId",kind,"runAt","updatedAt")
+      SELECT r."fixtureId",'LINEUPS'::"SyncJobKind",r."runAt",${now}
+      FROM jsonb_to_recordset(${rows}::jsonb) AS r("fixtureId" int,"runAt" timestamptz)
+      ON CONFLICT ("fixtureId",kind) DO UPDATE SET "runAt"=EXCLUDED."runAt",status='PENDING',
+        attempts=CASE WHEN ${reset} OR sync_jobs.status IN ('CANCELLED','SUCCEEDED') THEN 0 ELSE sync_jobs.attempts END,
+        "lastError"=CASE WHEN ${reset} THEN NULL ELSE sync_jobs."lastError" END,
+        "completedAt"=NULL,"updatedAt"=${now}
+      WHERE (${reset} AND sync_jobs.status <> 'RUNNING') OR sync_jobs.status IN ('CANCELLED','SUCCEEDED')
+        OR (${live} AND sync_jobs.status='PENDING' AND sync_jobs."runAt" < EXCLUDED."runAt")`;
   }
 
   @Interval(60000)
-  async processDueJob(preferredFixtureApiId?: number) {
-    if (this.busy || !this.db.configured || this.config.get<boolean>('PREDICTION_SCORING_ENABLED') !== true) return;
+  async scheduledTick() {
+    if (this.config.get<boolean>('BACKGROUND_JOBS_ENABLED') === false) return;
+    return this.clock.run(() => this.processDueJob());
+  }
+
+  async processDueJob(preferredFixtureApiId?: number): Promise<ScoringRun> {
+    if (!this.db.configured || this.config.get<boolean>('PREDICTION_SCORING_ENABLED') !== true) return { status: 'disabled' };
+    if (this.busy) return { status: 'busy' };
     this.busy = true;
     let job: SyncJob | undefined;
     try {
       const now = new Date(Date.now());
-      // Recover jobs for imported guest predictions and fixture reschedules.
-      const pending = await this.db.client.fixture.findMany({
-        where: { OR: [{ predictions: { some: { userId: { not: null }, score: null } } }, { scorePredictions: { some: { points: null } } }], kickoffAt: { not: null }, status: { notIn: ['CANC', 'PST', 'ABD', 'AWD', 'WO'] } },
-        select: { id: true, kickoffAt: true },
-      });
-      for (const fixture of pending) {
-        const runAt = replayDateToReal(new Date(fixture.kickoffAt!.getTime() + 3 * 3600000));
-        const existing = await this.db.client.syncJob.findUnique({ where: { fixtureId_kind: { fixtureId: fixture.id, kind: 'LINEUPS' } } });
-        if (!existing) await this.db.client.syncJob.create({ data: { fixtureId: fixture.id, kind: 'LINEUPS', runAt } });
-        else if (['CANCELLED', 'SUCCEEDED'].includes(existing.status)) await this.db.client.syncJob.update({ where: { id: existing.id }, data: { status: 'PENDING', runAt, attempts: 0 } });
-        else if (replayClock().mode !== 'DEMO' && existing.status === 'PENDING' && existing.runAt.getTime() < runAt.getTime()) {
-          await this.db.client.syncJob.update({ where: { id: existing.id }, data: { runAt } });
-        }
-      }
+      await this.syncSchedules(false, now);
       await this.db.client.$executeRaw`UPDATE sync_jobs SET status='FAILED',"lockedBy"=NULL,"lockedUntil"=NULL,"updatedAt"=${now}
         WHERE kind='LINEUPS' AND attempts >= "maxAttempts" AND (status='PENDING' OR (status='RUNNING' AND "lockedUntil"<=${now}))`;
       const claimed = await this.db.client.$queryRaw<SyncJob[]>`
@@ -62,23 +69,23 @@ export class PredictionScoringService {
           "lockedUntil"=${new Date(now.getTime() + 10 * 60000)},"updatedAt"=${now}
           FROM due WHERE j.id=due.id RETURNING j.*`;
       job = claimed[0];
-      if (!job) return;
+      if (!job) return { status: 'idle' };
       const fixture = await this.db.client.fixture.findUniqueOrThrow({ where: { id: job.fixtureId }, include: { homeTeam: true, awayTeam: true } });
       if (['CANC', 'PST', 'ABD', 'AWD', 'WO'].includes(fixture.status)) {
-        await this.release(job.id, { status: 'CANCELLED' }); return;
+        await this.release(job.id, { status: 'CANCELLED' }); return { status: 'processed' };
       }
       const dueAt = fixture.kickoffAt ? fixture.kickoffAt.getTime() + 3 * 3600000 : Infinity;
       if (Date.parse(replayClock().replayNow) < dueAt) {
-        await this.release(job.id, { status: 'PENDING', runAt: replayDateToReal(new Date(dueAt)) }); return;
+        await this.release(job.id, { status: 'PENDING', runAt: replayDateToReal(new Date(dueAt)) }); return { status: 'deferred' };
       }
       const [pendingXi, pendingScores] = await this.db.client.$transaction([
         this.db.client.lineupPrediction.count({ where: { fixtureId: fixture.id, userId: { not: null }, score: null } }),
         this.db.client.scorePrediction.count({ where: { fixtureId: fixture.id, points: null } }),
       ]);
-      if (!pendingXi && !pendingScores) { await this.release(job.id, { status: 'SUCCEEDED', completedAt: now, lastError: null }); return; }
+      if (!pendingXi && !pendingScores) { await this.release(job.id, { status: 'SUCCEEDED', completedAt: now, lastError: null }); return { status: 'processed' }; }
       if (this.api.quotaRemaining !== null && this.api.quotaRemaining <= 5) {
         const nextReset = new Date(now); nextReset.setUTCHours(24, 5, 0, 0);
-        await this.release(job.id, { status: 'PENDING', runAt: nextReset, attempts: Math.max(0, job.attempts - 1), lastError: 'Waiting for daily API quota reset' }); return;
+        await this.release(job.id, { status: 'PENDING', runAt: nextReset, attempts: Math.max(0, job.attempts - 1), lastError: 'Waiting for daily API quota reset' }); return { status: 'deferred' };
       }
       let matchData: (ApiFixture & { lineups?: ApiLineup[] }) | undefined;
       let finalResult: { home: number; away: number; status: string } | null = null;
@@ -94,7 +101,7 @@ export class PredictionScoringService {
           finalResult = { home, away, status: matchData.fixture.status.short };
         }
       }
-      const lineups: ApiLineup[] = pendingXi ? (Array.isArray(matchData?.lineups) ? matchData.lineups
+      const lineups: ApiLineup[] = pendingXi ? (matchData ? (Array.isArray(matchData.lineups) ? matchData.lineups : [])
         : (await this.api.get<ApiLineup>('/fixtures/lineups', { fixture: fixture.apiId })).response) : [];
       const expected = new Set([fixture.homeTeam.apiId, fixture.awayTeam.apiId]);
       const starterIds = lineups.flatMap((lineup) => (lineup.startXI || []).map((entry) => entry.player.id));
@@ -158,6 +165,7 @@ export class PredictionScoringService {
           lastError: complete ? null : 'Waiting for complete starting XI or confirmed final score',
         } });
       }, { timeout: 30000 });
+      return { status: 'processed', fixtureApiId: fixture.apiId };
     } catch (error) {
       if (job) {
         const status = error instanceof HttpException ? error.getStatus() : 500;
@@ -167,6 +175,7 @@ export class PredictionScoringService {
           runAt: retry, lastError: `Starting lineup sync failed (HTTP ${status})` }).catch(() => undefined);
       }
       this.logger.warn('A lineup scoring job will be retried or needs administrator attention.');
+      return { status: 'failed' };
     } finally { this.busy = false; }
   }
 
