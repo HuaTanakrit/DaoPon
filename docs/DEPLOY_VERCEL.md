@@ -23,6 +23,8 @@ npm run db:migrate
 4. ล้าง Build / Output / Install overrides ระดับ project ที่เคยใส่ไว้ ใช้คำสั่งแยกต่อ service ใน `vercel.json`
 5. ถ้าเคยใส่ `BACKEND_URL` เป็น localhost หรือ Railway ใน Project Variables ให้ลบค่านั้น Vercel จะฉีด URL ภายในผ่าน binding ให้ frontend เอง
 
+Install Command ของทั้งสอง service ต้องใช้ `npm ci --include=dev` ตาม `vercel.json` เพราะขั้น build ต้องใช้ TypeScript, type declarations, Nest CLI และ Prisma CLI แม้ `NODE_ENV=production` หากเคย override Install Command ในหน้า Vercel ให้ล้าง override เพื่อใช้ค่าจากไฟล์
+
 การจัดเส้นทาง:
 
 | เส้นทางสาธารณะ | Service |

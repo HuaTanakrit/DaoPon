@@ -4,7 +4,7 @@
     "frontend": {
       "root": "frontend",
       "framework": "nextjs",
-      "installCommand": "npm ci",
+      "installCommand": "npm ci --include=dev",
       "buildCommand": "npm run build",
       "bindings": [
         { "type": "service", "service": "backend", "format": "url", "env": "BACKEND_URL" }
@@ -14,7 +14,7 @@
       "root": "backend",
       "framework": "nestjs",
       "entrypoint": "src/main.ts",
-      "installCommand": "npm ci && npm run prisma:generate",
+      "installCommand": "npm ci --include=dev && npm run prisma:generate",
       "buildCommand": "npm run build",
       "functions": { "src/main.ts": { "maxDuration": 60 } }
     }
